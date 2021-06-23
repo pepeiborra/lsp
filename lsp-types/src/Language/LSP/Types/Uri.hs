@@ -1,6 +1,8 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeFamilies #-}
 module Language.LSP.Types.Uri
   ( Uri(..)
   , uriToFilePath
@@ -24,7 +26,7 @@ import qualified Data.Aeson                                 as A
 import           Data.Binary                                (Binary, Get, put, get)
 import           Data.Hashable
 import           Data.List                                  (stripPrefix)
-import           Data.MemoTrie                              (memo)
+import           Data.MemoTrie
 import           Data.String                                (IsString, fromString)
 import           Data.Text                                  (Text)
 import qualified Data.Text                                  as T
@@ -34,6 +36,11 @@ import qualified System.FilePath                            as FP
 import qualified System.FilePath.Posix                      as FPP
 import qualified System.FilePath.Windows                    as FPW
 import qualified System.Info
+import Data.HashMap.Strict (HashMap)
+import Data.IORef
+import System.IO.Unsafe (unsafePerformIO)
+import qualified Data.HashMap.Strict as HM
+import Data.Tuple (swap)
 
 newtype Uri = Uri { getUri :: Text }
   deriving (Eq,Ord,Read,Show,Generic,A.FromJSON,A.ToJSON,Hashable,A.ToJSONKey,A.FromJSONKey)
@@ -195,7 +202,7 @@ toNormalizedFilePath fp = NormalizedFilePath nuri nfp
       nuri = internalNormalizedFilePathToUri nfp
 
 internFilePath :: FilePath -> FilePath
-internFilePath = force . memo FP.joinPath . FP.splitPath
+internFilePath = force . memo (FP.joinPath . map myUnpack) . map myPack . FP.splitPath
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
 fromNormalizedFilePath (NormalizedFilePath _ fp) = fp
@@ -206,3 +213,25 @@ normalizedFilePathToUri (NormalizedFilePath uri _) = uri
 uriToNormalizedFilePath :: NormalizedUri -> Maybe NormalizedFilePath
 uriToNormalizedFilePath nuri = fmap (NormalizedFilePath nuri . internFilePath) mbFilePath
   where mbFilePath = platformAwareUriToFilePath System.Info.os (fromNormalizedUri nuri)
+
+----------------------------------------------------------------------------------------------------
+-- MyText newtype to avoid an orphan instance HasTrie Text
+newtype MyText = MyText {fromMyText::Text}
+  deriving (Eq, Hashable)
+
+myPack :: String -> MyText
+myUnpack :: MyText -> String
+myPack = MyText . T.pack
+myUnpack = T.unpack . fromMyText
+
+instance HasTrie MyText where
+  data MyText :->: a = MyTextTrie {tableRef :: IORef (HashMap MyText a), fromMyTextTrie :: MyText -> a}
+  {-# NOINLINE trie #-}
+  trie = MyTextTrie (unsafePerformIO $ newIORef mempty)
+  untrie MyTextTrie{..} x = unsafePerformIO $
+    atomicModifyIORef tableRef $ swap . flip HM.alterF x (\case
+        Just res -> (res, Just res)
+        Nothing -> let res = fromMyTextTrie x in (res, Just res)
+        )
+
+  enumerate MyTextTrie{..} = unsafePerformIO $ HM.toList <$> readIORef tableRef
