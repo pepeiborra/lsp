@@ -10,6 +10,7 @@ module Language.LSP.Types.Uri
   , toNormalizedUri
   , fromNormalizedUri
   , NormalizedFilePath
+  , normalizedFilePath
   , toNormalizedFilePath
   , fromNormalizedFilePath
   , normalizedFilePathToUri
@@ -160,7 +161,7 @@ platformAdjustToUriPath systemOS srcPath
 --
 -- This is one of the most performance critical parts of ghcide, do not
 -- modify it without profiling.
-data NormalizedFilePath = NormalizedFilePath NormalizedUri !FilePath
+data NormalizedFilePath = NormalizedFilePath NormalizedUri !Text
     deriving (Generic, Eq, Ord)
 
 instance NFData NormalizedFilePath
@@ -170,7 +171,13 @@ instance Binary NormalizedFilePath where
   get = do
     v <- Data.Binary.get :: Get FilePath
     let nuri = internalNormalizedFilePathToUri v
-    return (intern $ NormalizedFilePath nuri v)
+    return (normalizedFilePath nuri v)
+
+-- | A smart constructor that performs UTF-8 encoding and hash consing
+normalizedFilePath :: NormalizedUri -> FilePath -> NormalizedFilePath
+normalizedFilePath nuri nfp = intern $ NormalizedFilePath nuri nfp'
+  where
+    nfp' = T.pack nfp
 
 -- | Internal helper that takes a file path that is assumed to
 -- already be normalized to a URI. It is up to the caller
@@ -193,19 +200,19 @@ instance IsString NormalizedFilePath where
     fromString = toNormalizedFilePath
 
 toNormalizedFilePath :: FilePath -> NormalizedFilePath
-toNormalizedFilePath fp = intern $ NormalizedFilePath nuri nfp
+toNormalizedFilePath fp = normalizedFilePath nuri nfp
   where
       nfp = FP.normalise fp
       nuri = internalNormalizedFilePathToUri nfp
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
-fromNormalizedFilePath (NormalizedFilePath _ fp) = fp
+fromNormalizedFilePath (NormalizedFilePath _ fp) = T.unpack fp
 
 normalizedFilePathToUri :: NormalizedFilePath -> NormalizedUri
 normalizedFilePathToUri (NormalizedFilePath uri _) = uri
 
 uriToNormalizedFilePath :: NormalizedUri -> Maybe NormalizedFilePath
-uriToNormalizedFilePath nuri = fmap (intern . NormalizedFilePath nuri) mbFilePath
+uriToNormalizedFilePath nuri = fmap (normalizedFilePath nuri) mbFilePath
   where mbFilePath = platformAwareUriToFilePath System.Info.os (fromNormalizedUri nuri)
 
 ---------------------------------------------------------------------------
