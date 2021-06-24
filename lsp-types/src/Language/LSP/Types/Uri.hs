@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -161,7 +162,7 @@ platformAdjustToUriPath systemOS srcPath
 --
 -- This is one of the most performance critical parts of ghcide, do not
 -- modify it without profiling.
-data NormalizedFilePath = NormalizedFilePath (Maybe NormalizedUri) !Int !Text
+data NormalizedFilePath = NormalizedFilePath (Maybe NormalizedUri) !Int ![Text]
     deriving (Generic, Eq, Ord)
 
 instance NFData NormalizedFilePath
@@ -174,9 +175,9 @@ instance Binary NormalizedFilePath where
 
 -- | A smart constructor that performs UTF-8 encoding and hash consing
 normalizedFilePath :: Maybe NormalizedUri -> FilePath -> NormalizedFilePath
-normalizedFilePath nuri nfp = intern $ NormalizedFilePath nuri h nfp'
+normalizedFilePath nuri nfp = internNFP $ NormalizedFilePath nuri h nfp'
   where
-    nfp' = T.pack nfp
+    nfp' = map memoPack $ FP.splitPath nfp
     h = maybe (hash nfp') hash nuri
 
 -- | Internal helper that takes a file path that is assumed to
@@ -205,27 +206,35 @@ toNormalizedFilePath fp = normalizedFilePath Nothing nfp
       nfp = FP.normalise fp
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
-fromNormalizedFilePath (NormalizedFilePath _ _ fp) = T.unpack fp
+fromNormalizedFilePath (NormalizedFilePath _ _ fp) = FP.joinPath $ map T.unpack fp
 
 normalizedFilePathToUri :: NormalizedFilePath -> NormalizedUri
 normalizedFilePathToUri (NormalizedFilePath (Just uri) _ _) = uri
-normalizedFilePathToUri (NormalizedFilePath Nothing _ fp) = internalNormalizedFilePathToUri $ T.unpack fp
+normalizedFilePathToUri (NormalizedFilePath Nothing _ fp) =
+  internalNormalizedFilePathToUri $ FP.joinPath $ map  T.unpack fp
 
 uriToNormalizedFilePath :: NormalizedUri -> Maybe NormalizedFilePath
 uriToNormalizedFilePath nuri = fmap (normalizedFilePath (Just nuri)) mbFilePath
   where mbFilePath = platformAwareUriToFilePath System.Info.os (fromNormalizedUri nuri)
 
 ---------------------------------------------------------------------------
--- Unsafe hashcons of NFP
-internIO :: (Eq a, Hashable a) => IO (a -> IO a)
-internIO = do
-    tableRef <- newIORef mempty
-    let f x = atomicModifyIORef' tableRef $ swap . flip HM.alterF x (\case
-         Just res -> (res, Just res)
-         Nothing  -> (x, Just x)
-         )
-    return f
+-- Ugly memo primitives for efficient heap usage
 
-{-# NOINLINE intern #-}
-intern :: NormalizedFilePath -> NormalizedFilePath
-intern = let f = unsafePerformIO internIO in \x -> unsafePerformIO (f x)
+memoIO :: (Eq a, Hashable a) => (a -> b) -> IO (a -> IO b)
+memoIO f = do
+    tableRef <- newIORef mempty
+    let f' x = atomicModifyIORef' tableRef $ swap . flip HM.alterF x (\case
+         Just res -> (res, Just res)
+         Nothing  -> let res = f x in (res, Just res)
+         )
+    return f'
+
+{-# NOINLINE memo #-}
+memo :: (Eq a, Hashable a) => (a -> b) -> a -> b
+memo f = let f' = unsafePerformIO (memoIO f) in \x -> unsafePerformIO (f' x)
+
+internNFP :: NormalizedFilePath -> NormalizedFilePath
+internNFP = memo id
+
+memoPack :: String -> Text
+memoPack = memo T.pack
