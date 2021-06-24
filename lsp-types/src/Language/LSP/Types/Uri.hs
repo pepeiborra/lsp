@@ -161,23 +161,23 @@ platformAdjustToUriPath systemOS srcPath
 --
 -- This is one of the most performance critical parts of ghcide, do not
 -- modify it without profiling.
-data NormalizedFilePath = NormalizedFilePath NormalizedUri !Text
+data NormalizedFilePath = NormalizedFilePath (Maybe NormalizedUri) !Int !Text
     deriving (Generic, Eq, Ord)
 
 instance NFData NormalizedFilePath
 
 instance Binary NormalizedFilePath where
-  put (NormalizedFilePath _ fp) = put fp
+  put (NormalizedFilePath _ _ fp) = put fp
   get = do
     v <- Data.Binary.get :: Get FilePath
-    let nuri = internalNormalizedFilePathToUri v
-    return (normalizedFilePath nuri v)
+    return (normalizedFilePath Nothing v)
 
 -- | A smart constructor that performs UTF-8 encoding and hash consing
-normalizedFilePath :: NormalizedUri -> FilePath -> NormalizedFilePath
-normalizedFilePath nuri nfp = intern $ NormalizedFilePath nuri nfp'
+normalizedFilePath :: Maybe NormalizedUri -> FilePath -> NormalizedFilePath
+normalizedFilePath nuri nfp = intern $ NormalizedFilePath nuri h nfp'
   where
     nfp' = T.pack nfp
+    h = maybe (hash nfp') hash nuri
 
 -- | Internal helper that takes a file path that is assumed to
 -- already be normalized to a URI. It is up to the caller
@@ -190,29 +190,29 @@ internalNormalizedFilePathToUri fp = nuri
     nuri = NormalizedUri (hash nuriStr) nuriStr
 
 instance Show NormalizedFilePath where
-  show (NormalizedFilePath _ fp) = "NormalizedFilePath " ++ show fp
+  show (NormalizedFilePath _ _ fp) = "NormalizedFilePath " ++ show fp
 
 instance Hashable NormalizedFilePath where
-  hash (NormalizedFilePath uri _) = hash uri
-  hashWithSalt salt (NormalizedFilePath uri _) = hashWithSalt salt uri
+  hash (NormalizedFilePath _ h _) = h
+  hashWithSalt salt (NormalizedFilePath _ h _) = hashWithSalt salt h
 
 instance IsString NormalizedFilePath where
     fromString = toNormalizedFilePath
 
 toNormalizedFilePath :: FilePath -> NormalizedFilePath
-toNormalizedFilePath fp = normalizedFilePath nuri nfp
+toNormalizedFilePath fp = normalizedFilePath Nothing nfp
   where
       nfp = FP.normalise fp
-      nuri = internalNormalizedFilePathToUri nfp
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
-fromNormalizedFilePath (NormalizedFilePath _ fp) = T.unpack fp
+fromNormalizedFilePath (NormalizedFilePath _ _ fp) = T.unpack fp
 
 normalizedFilePathToUri :: NormalizedFilePath -> NormalizedUri
-normalizedFilePathToUri (NormalizedFilePath uri _) = uri
+normalizedFilePathToUri (NormalizedFilePath (Just uri) _ _) = uri
+normalizedFilePathToUri (NormalizedFilePath Nothing _ fp) = internalNormalizedFilePathToUri $ T.unpack fp
 
 uriToNormalizedFilePath :: NormalizedUri -> Maybe NormalizedFilePath
-uriToNormalizedFilePath nuri = fmap (normalizedFilePath nuri) mbFilePath
+uriToNormalizedFilePath nuri = fmap (normalizedFilePath (Just nuri)) mbFilePath
   where mbFilePath = platformAwareUriToFilePath System.Info.os (fromNormalizedUri nuri)
 
 ---------------------------------------------------------------------------
